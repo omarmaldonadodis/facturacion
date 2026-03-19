@@ -11,6 +11,7 @@ import java.awt.Component;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardWatchEventKinds;
@@ -109,7 +110,7 @@ public class FACTDIROffline {
                   Thread.sleep(3500L);
                   File file = new File(fullPath.toString());
                   if (!extension.equals("") && extension.toLowerCase().equals("xml") && file.exists()) {
-                     ProcesarComprobante(fullPath, fileName);
+                     ProcesarComprobante(fullPath, fileName, false);
                      ProcesarComprobantesPendientes(dir);
                      ProcesarComprobantesPendientesSRI();
                      ProcesarComprobantesPendientesAutorizacion();
@@ -125,105 +126,181 @@ public class FACTDIROffline {
 
    }
 
-   public static void ProcesarComprobantesPendientesAutorizacion() {
-      try {
-         File archivosSinProcesar = new File(configuracion.getProperty("dirProcesando"));
-         File[] archivos = archivosSinProcesar.listFiles();
-         if (archivos != null) {
-            for(int x = 0; x < archivos.length; ++x) {
-               Path fullPath = Paths.get(archivos[x].getAbsolutePath());
-               Path fileName = Paths.get(archivos[x].getName());
-               new File(fullPath.toString());
-               DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
-               DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
-               Document xmlComprobante = dBuilder.parse(new InputSource(fullPath.toString()));
-               principal.ActualizarText("Procesando comprobantes con clave de acceso en proceso");
-               String claveAcceso = xmlComprobante.getElementsByTagName("claveAcceso").item(0).getTextContent();
-               Thread.sleep(1500L);
-               principal.ActualizarText("Procesando Comprobante " + fileName + "..");
-               RespuestaInterna respuestaInterna = facturacion.procesarComprobantesPendientesAutorizacion(claveAcceso, xmlComprobante);
-               principal.ActualizarText("Comprobante " + fileName + " procesado. Estado: " + respuestaInterna.getEstadoComprobante());
-               if (!respuestaInterna.getEstadoComprobante().equals("AUTORIZADO") && !respuestaInterna.getMensajes().isEmpty()) {
-                  principal.ActualizarText("Mensaje " + ((MensajeGenerado)respuestaInterna.getMensajes().get(0)).getMensaje() + ". " + ((MensajeGenerado)respuestaInterna.getMensajes().get(0)).getInformacionAdicional());
-               }
+    public static void ProcesarComprobantesPendientesAutorizacion() {
+        try {
+            File archivosSinProcesar = new File(configuracion.getProperty("dirProcesando"));
+            File[] archivos = archivosSinProcesar.listFiles();
+            if (archivos != null) {
+                for (int x = 0; x < archivos.length; ++x) {
+                    Path fullPath = Paths.get(archivos[x].getAbsolutePath());
+                    Path fileName = Paths.get(archivos[x].getName());
 
-               String ruc = xmlComprobante.getElementsByTagName("ruc").item(0).getTextContent();
-               ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, true);
+                    DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+                    DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+                    Document xmlComprobante = dBuilder.parse(
+                        new InputSource(fullPath.toString()));
+
+                    String claveAcceso = xmlComprobante
+                        .getElementsByTagName("claveAcceso").item(0).getTextContent();
+
+                    Thread.sleep(2000L); // esperar más entre consultas
+                    principal.ActualizarText("Consultando autorización pendiente: " + fileName);
+
+                    RespuestaInterna respuestaInterna = 
+                        facturacion.procesarComprobantesPendientesAutorizacion(
+                            claveAcceso, xmlComprobante);
+
+                    String estado = respuestaInterna.getEstadoComprobante();
+                    principal.ActualizarText("Estado: " + estado);
+
+                    String ruc = xmlComprobante
+                        .getElementsByTagName("ruc").item(0).getTextContent();
+
+                    if (estado.equals("AUTORIZADO")) {
+                        // ✅ Generar PDF y enviar correo
+                        ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, true);
+
+                    } else if (estado.equals("PROCESANDOSE")) {
+                        // Verificar antigüedad del archivo - si tiene más de 30 min, 
+                        // mover a PendienteSRI para re-enviar desde cero
+                        long edadMinutos = (System.currentTimeMillis() 
+                            - archivos[x].lastModified()) / 60000;
+
+                        if (edadMinutos > 30) {
+                            principal.ActualizarText(
+                                "Comprobante lleva " + edadMinutos + 
+                                " min en PROCESANDOSE. Moviendo a PendienteSRI...");
+                            String dirPendiente = Paths.get(
+                                configuracion.getProperty("dirPendienteSRI"))
+                                .resolve(fileName).toString();
+                            archivos[x].renameTo(new File(dirPendiente));
+                        } else {
+                            principal.ActualizarText(
+                                "Comprobante aún procesándose (" + edadMinutos + " min). " +
+                                "Se reintentará en el próximo ciclo.");
+                        }
+
+                    } else if (estado.equals("NO AUTORIZADO") || estado.equals("DEVUELTA")) {
+                        ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, false);
+                    }
+                }
             }
-         }
-      } catch (Exception var12) {
-         Util.printExceptionInFile(var12, "pendientesAutorizacion", configuracion.getProperty("dirErrores"));
-         principal.ActualizarText("Error procesando los comprobantes con clave de acceso en proceso");
-      }
+        } catch (Exception var12) {
+            Util.printExceptionInFile(var12, "pendientesAutorizacion", 
+                configuracion.getProperty("dirErrores"));
+            principal.ActualizarText("Error: " + var12.getMessage());
+        }
+    }
 
-   }
 
-   public static void ProcesarComprobantesPendientesSRI() {
-      try {
-         File archivosSinProcesar = new File(configuracion.getProperty("dirPendienteSRI"));
-         File[] archivos = archivosSinProcesar.listFiles();
-         if (archivos != null) {
-            for(int x = 0; x < archivos.length; ++x) {
-               Path fullPath = Paths.get(archivos[x].getAbsolutePath());
-               Path fileName = Paths.get(archivos[x].getName());
-               new File(fullPath.toString());
-               Util.validarXML(fullPath.toString());
-               DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
-               DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
-               Document xmlComprobante = dBuilder.parse(new InputSource(fullPath.toString()));
-               principal.ActualizarText("Procesando comprobantes pendiente de Autorizacion SRI");
-               principal.ActualizarText("Procesando comprobante " + fileName + "...");
-               Thread.sleep(1500L);
-               RespuestaInterna respuestaInterna = facturacion.ProcesarComprobante(xmlComprobante);
-               principal.ActualizarText("Comprobante " + fileName + " procesado. Estado: " + respuestaInterna.getEstadoComprobante());
-               String ruc = xmlComprobante.getElementsByTagName("ruc").item(0).getTextContent();
-               ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, false);
+    public static void ProcesarComprobantesPendientesSRI() {
+        try {
+            File archivosSinProcesar = new File(configuracion.getProperty("dirPendienteSRI"));
+            File[] archivos = archivosSinProcesar.listFiles();
+            if (archivos != null) {
+                for (int x = 0; x < archivos.length; ++x) {
+                    Path fullPath = Paths.get(archivos[x].getAbsolutePath());
+                    Path fileName = Paths.get(archivos[x].getName());
+
+                    Util.validarXML(fullPath.toString());
+                    DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+                    DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+                    Document xmlComprobante = dBuilder.parse(
+                        new InputSource(fullPath.toString()));
+
+                    principal.ActualizarText("Enviando al SRI: " + fileName + "...");
+                    Thread.sleep(1500L);
+
+                    // ← CAMBIO CLAVE: usar ProcesarComprobante solo para enviar al SRI
+                    // NO volver a firmar, el XML ya está firmado
+                    RespuestaInterna respuestaInterna = facturacion.ProcesarComprobante(xmlComprobante);
+                    String estado = respuestaInterna.getEstadoComprobante();
+                    principal.ActualizarText("Estado: " + estado);
+
+                    String ruc = xmlComprobante
+                        .getElementsByTagName("ruc").item(0).getTextContent();
+
+                    if (estado.equals("AUTORIZADO")) {
+                        // ✅ Generar PDF y enviar correo
+                        ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, true);
+
+                    } else if (estado.equals("PROCESANDOSE")) {
+                        // Mover a carpeta Procesando para consultar después
+                        String dirProcesando = Paths.get(
+                            configuracion.getProperty("dirProcesando"))
+                            .resolve(fileName).toString();
+                        Files.move(fullPath, Paths.get(dirProcesando),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        principal.ActualizarText(fileName + " movido a Procesando.");
+
+                    } else if (estado.equals("FIRMADO") || estado.equals("ERROR")) {
+                        // SRI caído: dejar en PendientesSRI sin hacer nada
+                        principal.ActualizarText("SRI no disponible. " + 
+                            fileName + " queda en PendientesSRI.");
+                        // NO mover, NO procesar → esperar reenvío manual
+
+                    } else {
+                        // DEVUELTA, NO AUTORIZADO, etc.
+                        ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, false);
+                    }
+                }
             }
-         }
-      } catch (Exception var11) {
-         Util.printExceptionInFile(var11, "pendientesSRI", configuracion.getProperty("dirErrores"));
-         principal.ActualizarText("Error procesando los comprobantes pendiente de Autorizacion SRI" + var11.getMessage());
-      }
-
-   }
+        } catch (Exception var11) {
+            Util.printExceptionInFile(var11, "pendientesSRI",
+                configuracion.getProperty("dirErrores"));
+            principal.ActualizarText("Error: " + var11.getMessage());
+        }
+    }
 
    public static void ProcesarComprobantesPendientes(Path dirGenerados) throws ParserConfigurationException, SAXException, IOException, TransformerException, TransformerConfigurationException, InterruptedException {
-      File archivosSinProcesar = new File(dirGenerados.toString());
-      File[] archivos = archivosSinProcesar.listFiles();
-      if (archivos != null) {
-         for(int x = 0; x < archivos.length; ++x) {
-            Path fullPath = Paths.get(archivos[x].getAbsolutePath());
-            Path fileName = Paths.get(archivos[x].getName());
-            ProcesarComprobante(fullPath, fileName);
-         }
-      }
+        File archivosSinProcesar = new File(dirGenerados.toString());
+        File[] archivos = archivosSinProcesar.listFiles();
 
-      principal.ActualizarText("Todos los comprobantes procesados. Esperando nuevo(s) comprobante(s)...");
-      principal.ActualizarText("");
-   }
+        if (archivos != null && archivos.length > 0) {
+            int total = archivos.length;
+            principal.IniciarContador(total); // ← usa el nuevo método
 
-   private static void ProcesarComprobante(Path fullPath, Path fileName) {
-      File file = new File(fullPath.toString());
-      DocumentBuilder dBuilder = null;
+            for (int x = 0; x < archivos.length; x++) {
+                Path fullPath = Paths.get(archivos[x].getAbsolutePath());
+                Path fileName = Paths.get(archivos[x].getName());
+                ProcesarComprobante(fullPath, fileName, true);
+                // Ya no necesitas ActualizarContador aquí
+            }
+            principal.ActualizarText("Comprobantes firmados. Solicitando autorizaciones al SRI...");
+        }
+    }
+   
+    private static void ProcesarComprobante(Path fullPath, Path fileName, boolean silencioso) {
+        File file = new File(fullPath.toString());
+        try {
+            if (file.exists()) {
+                DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+                DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+                Document xmlComprobante = dBuilder.parse(new InputSource(fullPath.toString()));
 
-      try {
-         if (file.exists()) {
-            DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
-            dBuilder = dbFactory.newDocumentBuilder();
-            Document xmlComprobante = dBuilder.parse(new InputSource(fullPath.toString()));
-            principal.ActualizarText("Procesando comprobante: " + fileName + " ...");
-            Thread.sleep(1500L);
-            RespuestaInterna respuestaInterna = firma.FirmarComprobante(xmlComprobante);
-            principal.ActualizarText("Comprobante " + fileName + " procesado. Estado: " + respuestaInterna.getEstadoComprobante());
-            String ruc = xmlComprobante.getElementsByTagName("ruc").item(0).getTextContent();
-            ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, false);
-         }
-      } catch (Exception var8) {
-         Util.printExceptionInFile(var8, "procesarComprobante", configuracion.getProperty("dirErrores"));
-         principal.ActualizarText("Error procesando comprobante: " + fileName);
-      }
+                if (!silencioso) {
+                    principal.ActualizarText("Procesando comprobante: " + fileName + " ...");
+                }
 
-   }
+                Thread.sleep(1500L);
+                RespuestaInterna respuestaInterna = firma.FirmarComprobante(xmlComprobante);
+
+                // ← Actualizar contador AQUÍ, justo tras firmar
+                if (silencioso) {
+                    principal.IncrementarContador();
+                } else {
+                    principal.ActualizarText("Estado: " + respuestaInterna.getEstadoComprobante());
+                }
+
+                String ruc = xmlComprobante.getElementsByTagName("ruc").item(0).getTextContent();
+                ProcesarRespuesta(fullPath, fileName, respuestaInterna, ruc, false);
+            }
+        } catch (Exception var8) {
+            Util.printExceptionInFile(var8, "procesarComprobante", configuracion.getProperty("dirErrores"));
+            principal.ActualizarText("Error procesando: " + fileName);
+        }
+    }
+
 
    private static void ProcesarRespuesta(Path fullPath, Path fileName, RespuestaInterna respuestaInterna, String ruc, boolean envioEmail) throws ParserConfigurationException, TransformerConfigurationException, TransformerException, SAXException, IOException {
       principal.ActualizarDocNoAutorizados(obtenerCantidadArchivos(configuracion.getProperty("dirNoAutorizado" + ruc)));
@@ -276,9 +353,55 @@ public class FACTDIROffline {
          factory = null;
          builder = null;
          implementation = null;
-         boolean claveRestringida = respuestaInterna.getMensajes().stream().anyMatch((value) -> {
-            return value.getMensaje().equalsIgnoreCase("CLAVE ACCESO REGISTRADA") || value.getIdentificador().equalsIgnoreCase("43");
-         });
+        // CÓDIGO NUEVO - reemplazar todo ese bloque:
+        boolean claveRegistrada = respuestaInterna.getMensajes().stream().anyMatch((value) -> {
+            return value.getMensaje().equalsIgnoreCase("CLAVE ACCESO REGISTRADA") 
+                || value.getIdentificador().equalsIgnoreCase("43");
+        });
+
+        if (claveRegistrada) {
+            // El comprobante YA está en el SRI, solo hay que consultar su autorización
+            principal.ActualizarText("Clave ya registrada en SRI. Consultando autorización...");
+            try {
+                String claveAcceso = xmlOriginal.getElementsByTagName("claveAcceso").item(0).getTextContent();
+                Thread.sleep(2000L);
+                RespuestaInterna respuestaAutorizacion = 
+                    facturacion.procesarComprobantesPendientesAutorizacion(claveAcceso, xmlOriginal);
+
+                principal.ActualizarText("Estado tras consulta: " + 
+                    respuestaAutorizacion.getEstadoComprobante());
+
+                if (respuestaAutorizacion.getEstadoComprobante().equals("AUTORIZADO")) {
+                    // Procesar normalmente como autorizado
+                    ProcesarRespuesta(fullPath, fileName, respuestaAutorizacion, ruc, true);
+                } else {
+                    // Mover a Procesando para reintentar después
+                    String dirProcesando = Paths.get(configuracion.getProperty("dirProcesando"))
+                                                .resolve(fileName).toString();
+                    DOMSource srcTemp = new DOMSource(xmlOriginal);
+                    StreamResult resTemp = new StreamResult(new File(dirProcesando));
+                    TransformerFactory.newInstance().newTransformer().transform(srcTemp, resTemp);
+                    file.delete();
+                    principal.ActualizarText("Comprobante movido a Procesando para reintentar.");
+                }
+            } catch (Exception ex) {
+                principal.ActualizarText("Error consultando autorización: " + ex.getMessage());
+            }
+            return; // salir, ya se procesó
+        }
+
+        // Si no es claveRegistrada, comportamiento normal:
+        if (xmlOriginal != null && !respuestaInterna.getEstadoComprobante().equals("AUTORIZADO")) {
+            DOMSource source = new DOMSource(xmlComprobante);
+            StreamResult result = new StreamResult(new File(dirGuardarDoc));
+            Transformer transformer = TransformerFactory.newInstance().newTransformer();
+            if (!respuestaInterna.getEstadoComprobante().equals("FIRMADO")) {
+                transformer.setOutputProperty("indent", "yes");
+                transformer.setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2");
+            }
+            transformer.transform(source, result);
+            principal.ActualizarText("Comprobante: " + fileName + " guardado en: " + dirGuardarDoc);
+        }
          DOMSource source;
          StreamResult result;
          Transformer transformer;
@@ -291,10 +414,6 @@ public class FACTDIROffline {
                transformer.setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2");
             }
 
-            if (!claveRestringida) {
-               transformer.transform(source, result);
-               principal.ActualizarText("Comprobante: " + fileName + " guardado en: " + dirGuardarDoc);
-            }
          }
 
          if (respuestaInterna.getEstadoComprobante() != null && !respuestaInterna.getEstadoComprobante().equals("ERROR") && !respuestaInterna.getEstadoComprobante().equals("PROCESANDOSE")) {

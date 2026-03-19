@@ -67,7 +67,12 @@ public class Facturacion {
          respuestaRecepcion = this.ValidarComprobante(this.util.convertirXMLToString(xmlComprobante));
       } catch (Exception var7) {
          Util.printExceptionInFile(var7, "pendientesSRI", this.configuracion.getProperty("dirErrores"));
-         return this.CrearRespuestaException("EL SERVIDOR DEL SRI NO ESTA DISPONIBLE ESTE MOMENTO REENVIAR COMPROBANTE MAS TARDE");
+        RespuestaInterna respuesta = new RespuestaInterna();
+        respuesta.setEstadoComprobante("FIRMADO");
+        respuesta.setComprobante(xmlComprobante);
+        respuesta.addMensaje(new MensajeGenerado("2000",
+            "SRI NO DISPONIBLE - SE REINTENTARÁ AUTOMÁTICAMENTE", null, "ADVERTENCIA"));
+        return respuesta;
       }
 
       if (respuestaRecepcion.getEstado().equals("DEVUELTA") && !respuestaRecepcion.getComprobantes().getComprobante().isEmpty()) {
@@ -88,7 +93,12 @@ public class Facturacion {
             respuestaAutorizacion = this.AutorizarComprobante(claveAcceso);
          } catch (Exception var6) {
             Util.printExceptionInFile(var6, "pendientesSRI", this.configuracion.getProperty("dirErrores"));
-            return this.CrearRespuestaException("EL SERVIDOR DEL SRI NO ESTA DISPONIBLE ESTE MOMENTO REENVIAR COMPROBANTE MAS TARDE");
+            RespuestaInterna respuesta = new RespuestaInterna();
+            respuesta.setEstadoComprobante("FIRMADO");
+            respuesta.setComprobante(xmlComprobante);
+            respuesta.addMensaje(new MensajeGenerado("2000",
+                "SRI NO DISPONIBLE AL AUTORIZAR - SE REINTENTARÁ", null, "ADVERTENCIA"));
+            return respuesta;
          }
 
          return this.CrearRespuestaAutorizacion(respuestaAutorizacion);

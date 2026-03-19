@@ -51,7 +51,41 @@ public class Principal extends JFrame {
    public void ActualizarDocNoAutorizados(String cantidad) {
       this.jLabelFileNotAutorized.setText(cantidad);
    }
+   
+    private int contadorFirmados = 0;
+    private int totalFirmados = 0;
 
+    public void IniciarContador(int total) {
+        this.contadorFirmados = 0;
+        this.totalFirmados = total;
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            jTextArea1.append("Firmando comprobantes... (0/" + total + ") \n");
+        });
+    }
+
+    public void IncrementarContador() {
+        contadorFirmados++;
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            String contenido = jTextArea1.getText();
+            int ultimoSalto = contenido.lastIndexOf("\n", contenido.length() - 2);
+            if (ultimoSalto >= 0) {
+                jTextArea1.replaceRange(
+                    "Firmando comprobantes... (" + contadorFirmados + "/" + totalFirmados + ") \n",
+                    ultimoSalto + 1, contenido.length()
+                );
+            }
+        });
+    }
+
+    public void ActualizarContador(String texto) {
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            String contenido = jTextArea1.getText();
+            int ultimoSalto = contenido.lastIndexOf("\n", contenido.length() - 2);
+            if (ultimoSalto >= 0) {
+                jTextArea1.replaceRange(texto + " \n", ultimoSalto + 1, contenido.length());
+            }
+        });
+    }
    private void initComponents() {
       this.jMenuItem1 = new JMenuItem();
       this.popupMenu1 = new PopupMenu();
